@@ -114,18 +114,25 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
         // Progress view
         progressView = UIProgressView(progressViewStyle: .default)
         progressView.progress = 0
-        progressView.tintColor = .systemBlue
         
-        // Navigation controls
-        let navigationStack = UIStackView()
-        navigationStack.axis = .horizontal
-        navigationStack.distribution = .equalSpacing
-        navigationStack.spacing = 20
+        // Time slider and duration label
+        timeSlider = UISlider()
+        timeSlider.minimumValue = 0
+        timeSlider.maximumValue = 1
+        timeSlider.value = 0
+        timeSlider.addTarget(self, action: #selector(timeSliderChanged), for: .valueChanged)
         
-        // Previous button
-        previousButton = UIButton(type: .system)
-        previousButton.setImage(UIImage(systemName: "backward.fill"), for: .normal)
-        previousButton.addTarget(self, action: #selector(previousPage), for: .touchUpInside)
+        durationLabel = UILabel()
+        durationLabel.text = "00:00 / 00:00"
+        durationLabel.textAlignment = .center
+        durationLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        
+        // Speed slider
+        speedSlider = UISlider()
+        speedSlider.minimumValue = AVSpeechUtteranceMinimumSpeechRate
+        speedSlider.maximumValue = AVSpeechUtteranceMaximumSpeechRate
+        speedSlider.value = AVSpeechUtteranceDefaultSpeechRate
+        speedSlider.addTarget(self, action: #selector(speedChanged), for: .valueChanged)
         
         // Play/Pause button
         playPauseButton = UIButton(type: .system)
@@ -135,10 +142,21 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
         playPauseButton.layer.cornerRadius = 25
         playPauseButton.addTarget(self, action: #selector(playPauseAction), for: .touchUpInside)
         
+        // Previous button
+        previousButton = UIButton(type: .system)
+        previousButton.setImage(UIImage(systemName: "backward.fill"), for: .normal)
+        previousButton.addTarget(self, action: #selector(previousPage), for: .touchUpInside)
+        
         // Next button
         nextButton = UIButton(type: .system)
         nextButton.setImage(UIImage(systemName: "forward.fill"), for: .normal)
         nextButton.addTarget(self, action: #selector(nextPage), for: .touchUpInside)
+        
+        // Navigation controls
+        let navigationStack = UIStackView()
+        navigationStack.axis = .horizontal
+        navigationStack.distribution = .equalSpacing
+        navigationStack.spacing = 20
         
         navigationStack.addArrangedSubview(previousButton)
         navigationStack.addArrangedSubview(playPauseButton)
@@ -153,12 +171,6 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
         let speedLabel = UILabel()
         speedLabel.text = "Speed"
         speedLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        
-        speedSlider = UISlider()
-        speedSlider.minimumValue = 0.1 // Very slow
-        speedSlider.maximumValue = 0.75 // Very fast
-        speedSlider.value = 0.5 // Default speed
-        speedSlider.addTarget(self, action: #selector(speedChanged(_:)), for: .valueChanged)
         
         speedStack.addArrangedSubview(speedLabel)
         speedStack.addArrangedSubview(speedSlider)
@@ -184,7 +196,8 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
         
         // Add all controls to main stack
         mainStack.addArrangedSubview(progressView)
-        mainStack.addArrangedSubview(timeStack)
+        mainStack.addArrangedSubview(timeSlider)
+        mainStack.addArrangedSubview(durationLabel)
         mainStack.addArrangedSubview(navigationStack)
         mainStack.addArrangedSubview(speedStack)
         mainStack.addArrangedSubview(settingsStack)
@@ -202,7 +215,6 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
     @objc private func openPDFPicker() {
         let documentPicker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.pdf], asCopy: true)
         documentPicker.delegate = self
-        documentPicker.allowsMultipleSelection = false
         present(documentPicker, animated: true)
     }
     
@@ -210,20 +222,22 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let url = urls.first else { return }
         loadPDF(url: url)
+        startReading()
     }
     
     @objc private func playPauseAction() {
         if synthesizer.isSpeaking {
-            if isPlaying {
-                synthesizer.pauseSpeaking(at: .immediate)
-                playPauseButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
-            } else {
-                synthesizer.continueSpeaking()
-                playPauseButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
-            }
-            isPlaying = !isPlaying
+            synthesizer.pauseSpeaking(at: .immediate)
+            playPauseButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
+            isPlaying = false
+        } else if synthesizer.isPaused {
+            synthesizer.continueSpeaking()
+            playPauseButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
+            isPlaying = true
         } else {
             startReading()
+            playPauseButton.setImage(UIImage(systemName: "pause.fill"), for: .normal)
+            isPlaying = true
         }
     }
     
