@@ -8,10 +8,14 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
     private let synthesizer = AVSpeechSynthesizer()
     private var currentPage = 0
     private var progressView: UIProgressView!
-    private var speedControl: UISegmentedControl!
+    private var speedSlider: UISlider!
     private var pageControl: UIPageControl!
     private var readingProgress: Float = 0.0
-    private var speedRates: [Float] = [0.3, 0.5, 0.7]
+    private var durationLabel: UILabel!
+    private var timeSlider: UISlider!
+    private var currentUtterance: AVSpeechUtterance?
+    private var utteranceStartTime: Date?
+    private var estimatedDuration: TimeInterval = 0
     private var playPauseButton: UIButton!
     private var nextButton: UIButton!
     private var previousButton: UIButton!
@@ -140,10 +144,24 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
         navigationStack.addArrangedSubview(playPauseButton)
         navigationStack.addArrangedSubview(nextButton)
         
-        // Speed control
-        speedControl = UISegmentedControl(items: ["Slow", "Normal", "Fast"])
-        speedControl.selectedSegmentIndex = 1
-        speedControl.addTarget(self, action: #selector(speedChanged(_:)), for: .valueChanged)
+        // Speed control stack
+        let speedStack = UIStackView()
+        speedStack.axis = .horizontal
+        speedStack.distribution = .fill
+        speedStack.spacing = 10
+        
+        let speedLabel = UILabel()
+        speedLabel.text = "Speed"
+        speedLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        
+        speedSlider = UISlider()
+        speedSlider.minimumValue = 0.1 // Very slow
+        speedSlider.maximumValue = 0.75 // Very fast
+        speedSlider.value = 0.5 // Default speed
+        speedSlider.addTarget(self, action: #selector(speedChanged(_:)), for: .valueChanged)
+        
+        speedStack.addArrangedSubview(speedLabel)
+        speedStack.addArrangedSubview(speedSlider)
         
         // Settings stack
         let settingsStack = UIStackView()
@@ -166,8 +184,9 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
         
         // Add all controls to main stack
         mainStack.addArrangedSubview(progressView)
+        mainStack.addArrangedSubview(timeStack)
         mainStack.addArrangedSubview(navigationStack)
-        mainStack.addArrangedSubview(speedControl)
+        mainStack.addArrangedSubview(speedStack)
         mainStack.addArrangedSubview(settingsStack)
         
         // Layout constraints
@@ -227,22 +246,49 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
     }
     
     @objc private func showVoicePicker() {
-        let alert = UIAlertController(title: "Select Voice", message: nil, preferredStyle: .actionSheet)
+        let voiceVC = UITableViewController(style: .grouped)
+        voiceVC.title = "Select Voice"
         
-        for voice in availableVoices {
-            let action = UIAlertAction(title: "\(voice.language) (\(voice.quality == .enhanced ? "Enhanced" : "Standard"))",
-                                      style: .default) { [weak self] _ in
-                self?.selectedVoice = voice
-                if self?.synthesizer.isSpeaking == true {
-                    self?.synthesizer.stopSpeaking(at: .immediate)
-                    self?.startReading()
-                }
+        // Group voices by language
+        let groupedVoices = Dictionary(grouping: availableVoices) { $0.language }
+        let sortedLanguages = groupedVoices.keys.sorted()
+        
+        voiceVC.tableView.register(UITableViewCell.self, forCellReuseIdentifier: "VoiceCell")
+        
+        voiceVC.tableView.dataSource = { [weak self] tableView, indexPath in
+            let cell = tableView.dequeueReusableCell(withIdentifier: "VoiceCell", for: indexPath)
+            let language = sortedLanguages[indexPath.section]
+            let voice = groupedVoices[language]![indexPath.row]
+            
+            var config = cell.defaultContentConfiguration()
+            config.text = voice.name
+            config.secondaryText = "\(voice.quality == .enhanced ? "Enhanced" : "Standard")"
+            cell.contentConfiguration = config
+            
+            if voice.identifier == self?.selectedVoice?.identifier {
+                cell.accessoryType = .checkmark
+            } else {
+                cell.accessoryType = .none
             }
-            alert.addAction(action)
+            
+            return cell
         }
         
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel, handler: nil))
-        present(alert, animated: true)
+        voiceVC.tableView.delegate = { [weak self] tableView, indexPath in
+            let language = sortedLanguages[indexPath.section]
+            let voice = groupedVoices[language]![indexPath.row]
+            self?.selectedVoice = voice
+            
+            if self?.synthesizer.isSpeaking == true {
+                self?.synthesizer.stopSpeaking(at: .immediate)
+                self?.startReading()
+            }
+            
+            tableView.reloadData()
+        }
+        
+        let nav = UINavigationController(rootViewController: voiceVC)
+        present(nav, animated: true)
     }
     
     @objc private func toggleDarkMode() {
@@ -305,17 +351,65 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
             print("No suitable voice found, using system default")
         }
         
-        // Configure speech parameters based on speed control
-        let selectedSpeed = speedRates[speedControl.selectedSegmentIndex]
-        utterance.rate = selectedSpeed
+        // Configure speech parameters based on speed slider
+        utterance.rate = speedSlider.value
         utterance.pitchMultiplier = 1.0
         utterance.volume = 1.0 // Maximum volume
         
         // Start speaking
         synthesizer.speak(utterance)
         
-        // Show feedback to user
-        showAlert(message: "Started reading page \(currentPage + 1)")
+        // Store current utterance and start time
+        currentUtterance = utterance
+        utteranceStartTime = Date()
+        
+        // Estimate duration based on word count and speed
+        let wordCount = text.components(separatedBy: .whitespacesAndNewlines).count
+        estimatedDuration = TimeInterval(Double(wordCount) * (0.3 / Double(utterance.rate)))
+        updateDurationLabel()
+    }
+    
+    private func formatTime(_ seconds: TimeInterval) -> String {
+        let minutes = Int(seconds) / 60
+        let seconds = Int(seconds) % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+    
+    private func updateDurationLabel() {
+        guard let startTime = utteranceStartTime else {
+            durationLabel.text = "00:00 / \(formatTime(estimatedDuration))"
+            return
+        }
+        
+        let elapsed = Date().timeIntervalSince(startTime)
+        durationLabel.text = "\(formatTime(elapsed)) / \(formatTime(estimatedDuration))"
+    }
+    
+    @objc private func timeSliderChanged(_ sender: UISlider) {
+        guard let utterance = currentUtterance,
+              let text = utterance.speechString else { return }
+        
+        // Calculate the character position based on slider value
+        let position = Int(Float(text.count) * sender.value)
+        
+        // Stop current speech
+        synthesizer.stopSpeaking(at: .immediate)
+        
+        // Create new utterance with remaining text
+        let index = text.index(text.startIndex, offsetBy: min(position, text.count - 1))
+        let remainingText = String(text[index...])
+        
+        let newUtterance = AVSpeechUtterance(string: remainingText)
+        newUtterance.voice = selectedVoice
+        newUtterance.rate = speedSlider.value
+        newUtterance.pitchMultiplier = 1.0
+        newUtterance.volume = 1.0
+        
+        // Update time tracking
+        utteranceStartTime = Date().addingTimeInterval(-TimeInterval(Double(position) * (0.3 / Double(utterance.rate))))
+        currentUtterance = newUtterance
+        
+        synthesizer.speak(newUtterance)
     }
     
     private func showAlert(message: String) {
@@ -346,8 +440,7 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
         pdfView.go(to: pdfView.document?.page(at: currentPage) ?? PDFPage())
     }
     
-    @objc private func speedChanged(_ sender: UISegmentedControl) {
-        // Stop current reading if any
+    @objc private func speedChanged(_ sender: UISlider) {
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
             startReading() // Restart with new speed
@@ -358,6 +451,8 @@ class PDFViewController: UIViewController, UIDocumentPickerDelegate, AVSpeechSyn
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, willSpeakRangeOfSpeechString characterRange: NSRange, utterance: AVSpeechUtterance) {
         let progress = Float(characterRange.location + characterRange.length) / Float(utterance.speechString.count)
         progressView.progress = progress
+        timeSlider.value = progress
+        updateDurationLabel()
     }
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
